@@ -1,0 +1,75 @@
+# Full stack: cairnmark + Postgres + MinIO. Start everything with:
+#   docker compose up -d --build
+# The service auto-applies migrations and creates its bucket on boot.
+#
+# Presigned URLs and the dual endpoint:
+#   The service reaches MinIO over the internal network name (minio:9000), but
+#   presigned download URLs are handed to clients OUTSIDE the Compose network,
+#   which cannot resolve "minio". So CAIRNMARK_S3_PUBLIC_ENDPOINT points at the
+#   published MinIO port (localhost:9000). The host is part of the SigV4
+#   signature and cannot be rewritten after signing, so the service signs
+#   against the public endpoint directly.
+services:
+  cairnmark:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      CAIRNMARK_HTTP_ADDR: ":8080"
+      CAIRNMARK_POSTGRES_DSN: "postgres://cairnmark:cairnmark@postgres:5432/cairnmark?sslmode=disable"
+      CAIRNMARK_S3_ENDPOINT: "minio:9000"           # internal: service → MinIO
+      CAIRNMARK_S3_PUBLIC_ENDPOINT: "localhost:9000" # external: presigned URLs
+      CAIRNMARK_S3_ACCESS_KEY: "cairnmark"
+      CAIRNMARK_S3_SECRET_KEY: "cairnmark-secret"
+      CAIRNMARK_S3_BUCKET: "cairnmark"
+      CAIRNMARK_S3_USE_SSL: "false"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: cairnmark
+      POSTGRES_PASSWORD: cairnmark
+      POSTGRES_DB: cairnmark
+      # PG18 moved the image's default data dir; pin it so the volume is stable.
+      PGDATA: /var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cairnmark -d cairnmark"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: cairnmark
+      MINIO_ROOT_PASSWORD: cairnmark-secret
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  miniodata:

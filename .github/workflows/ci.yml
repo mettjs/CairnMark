@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: build / vet / unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: test -z "$(gofmt -l .)" || (echo "gofmt needed:"; gofmt -l .; exit 1)
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  integration:
+    name: integration (real Postgres + MinIO)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: cairnmark
+          POSTGRES_PASSWORD: cairnmark
+          POSTGRES_DB: cairnmark
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cairnmark -d cairnmark"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: cairnmark
+          MINIO_ROOT_PASSWORD: cairnmark-secret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      CAIRNMARK_POSTGRES_DSN: postgres://cairnmark:cairnmark@localhost:5432/cairnmark?sslmode=disable
+      CAIRNMARK_S3_ENDPOINT: localhost:9000
+      CAIRNMARK_S3_ACCESS_KEY: cairnmark
+      CAIRNMARK_S3_SECRET_KEY: cairnmark-secret
+      CAIRNMARK_S3_BUCKET: cairnmark-it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: integration tests
+        run: go test -tags=integration ./...
