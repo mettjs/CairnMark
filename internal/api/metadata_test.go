@@ -5,24 +5,21 @@ import (
 	"testing"
 )
 
-func TestClampPage(t *testing.T) {
+func TestClampLimit(t *testing.T) {
 	tests := []struct {
-		name                  string
-		limit, offset         int
-		wantLimit, wantOffset int
+		name  string
+		limit int
+		want  int
 	}{
-		{"defaults", 0, 0, listDefaultLimit, 0},
-		{"negative limit -> default", -5, 0, listDefaultLimit, 0},
-		{"over max -> capped", 10000, 0, listMaxLimit, 0},
-		{"in range kept", 25, 10, 25, 10},
-		{"negative offset -> zero", 25, -3, 25, 0},
+		{"default when unset", 0, listDefaultLimit},
+		{"negative -> default", -5, listDefaultLimit},
+		{"over max -> capped", 10000, listMaxLimit},
+		{"in range kept", 25, 25},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			l, o := clampPage(tt.limit, tt.offset)
-			if l != tt.wantLimit || o != tt.wantOffset {
-				t.Fatalf("clampPage(%d,%d) = (%d,%d), want (%d,%d)",
-					tt.limit, tt.offset, l, o, tt.wantLimit, tt.wantOffset)
+			if got := clampLimit(tt.limit); got != tt.want {
+				t.Fatalf("clampLimit(%d) = %d, want %d", tt.limit, got, tt.want)
 			}
 		})
 	}

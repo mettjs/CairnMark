@@ -15,6 +15,7 @@ import (
 	"github.com/mettjs/cairnmark/internal/files"
 	"github.com/mettjs/cairnmark/internal/gc"
 	"github.com/mettjs/cairnmark/internal/metadata/postgres"
+	"github.com/mettjs/cairnmark/internal/metrics"
 	"github.com/mettjs/cairnmark/internal/storage/s3"
 )
 
@@ -55,13 +56,17 @@ func boot(log *slog.Logger) error {
 
 	repo := postgres.New(pool)
 	collector := gc.New(backend, repo, log, cfg.GC.Interval, cfg.GC.GracePeriod, cfg.GC.IdempotencyTTL)
+	collector.OnSweep(func(s gc.Stats, err error) {
+		metrics.ObserveGCSweep(s.Purged, s.Orphans, s.ExpiredKeys, err)
+	})
 	go collector.Run(ctx)
 
 	handler := api.Router(api.Deps{
-		Files:      files.New(backend, repo),
-		ReadyCheck: readiness(pool, backend),
-		Logger:     log,
-		PresignTTL: cfg.PresignTTL,
+		Files:          files.New(backend, repo),
+		ReadyCheck:     readiness(pool, backend),
+		Logger:         log,
+		PresignTTL:     cfg.PresignTTL,
+		MaxUploadBytes: cfg.MaxUploadBytes,
 	})
 
 	return run(ctx, cfg, handler, log)

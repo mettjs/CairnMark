@@ -12,8 +12,8 @@ import (
 	"github.com/mettjs/cairnmark/internal/files"
 )
 
-func registerFiles(mux *http.ServeMux, svc *files.Service, logger *slog.Logger, presignTTL time.Duration) {
-	h := &fileHandler{svc: svc, log: logger, presignTTL: presignTTL}
+func registerFiles(mux *http.ServeMux, svc *files.Service, logger *slog.Logger, presignTTL time.Duration, maxUpload int64) {
+	h := &fileHandler{svc: svc, log: logger, presignTTL: presignTTL, maxUpload: maxUpload}
 	mux.HandleFunc("POST /files", h.upload)
 	mux.HandleFunc("GET /files", h.list)
 	mux.HandleFunc("GET /files/{id}", h.download)
@@ -26,6 +26,7 @@ type fileHandler struct {
 	svc        *files.Service
 	log        *slog.Logger
 	presignTTL time.Duration
+	maxUpload  int64 // reject upload bodies larger than this; 0 disables the cap
 }
 
 // maxIdempotencyKeyLen bounds the client-supplied key (it is a primary key).
@@ -35,7 +36,9 @@ const maxIdempotencyKeyLen = 255
 // Content-Disposition header; content type from the Content-Type header (the
 // service sniffs it when absent); size from Content-Length (-1 when chunked).
 // An optional Idempotency-Key header makes a retried upload return the original
-// result instead of creating a duplicate.
+// result instead of creating a duplicate. Bodies over the configured size cap
+// are rejected with 413 — up front when Content-Length declares the breach,
+// mid-stream otherwise (chunked or lying clients).
 func (h *fileHandler) upload(w http.ResponseWriter, r *http.Request) {
 	tags, err := uploadTags(r)
 	if err != nil {
@@ -48,12 +51,23 @@ func (h *fileHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body := io.Reader(r.Body)
+	var lim *limitReader
+	if h.maxUpload > 0 {
+		if r.ContentLength > h.maxUpload {
+			h.writeTooLarge(w)
+			return
+		}
+		lim = &limitReader{r: r.Body, remaining: h.maxUpload}
+		body = lim
+	}
+
 	in := files.UploadInput{
 		Filename:    uploadFilename(r),
 		ContentType: r.Header.Get("Content-Type"),
 		Size:        r.ContentLength,
 		Tags:        tags,
-		Body:        r.Body,
+		Body:        body,
 	}
 
 	var f *files.File
@@ -64,6 +78,12 @@ func (h *fileHandler) upload(w http.ResponseWriter, r *http.Request) {
 		f, replayed, err = h.svc.UploadIdempotent(r.Context(), key, in)
 	}
 	if err != nil {
+		if lim != nil && lim.exceeded {
+			// The interrupted store write may leave a partial object; GC reclaims
+			// it like any other orphan.
+			h.writeTooLarge(w)
+			return
+		}
 		h.writeError(w, err)
 		return
 	}
@@ -73,6 +93,11 @@ func (h *fileHandler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/files/"+f.ID)
 	writeJSON(w, http.StatusCreated, toResponse(f))
+}
+
+func (h *fileHandler) writeTooLarge(w http.ResponseWriter) {
+	writeClientError(w, http.StatusRequestEntityTooLarge,
+		fmt.Sprintf("upload exceeds the %d-byte limit", h.maxUpload))
 }
 
 // download serves bytes one of three ways:

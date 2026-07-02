@@ -67,6 +67,38 @@ func TestPublicEndpointWithPathRejected(t *testing.T) {
 	}
 }
 
+func TestMaxUploadBytes(t *testing.T) {
+	setRequired(t)
+
+	// Unset → cap disabled.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxUploadBytes != 0 {
+		t.Fatalf("MaxUploadBytes default: got %d want 0 (disabled)", cfg.MaxUploadBytes)
+	}
+
+	t.Setenv("CAIRNMARK_MAX_UPLOAD_BYTES", "1073741824")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxUploadBytes != 1<<30 {
+		t.Fatalf("MaxUploadBytes: got %d want %d", cfg.MaxUploadBytes, 1<<30)
+	}
+
+	t.Setenv("CAIRNMARK_MAX_UPLOAD_BYTES", "10GB")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CAIRNMARK_MAX_UPLOAD_BYTES") {
+		t.Fatalf("expected parse error for non-integer value, got %v", err)
+	}
+
+	t.Setenv("CAIRNMARK_MAX_UPLOAD_BYTES", "-1")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "must be >= 0") {
+		t.Fatalf("expected rejection of negative value, got %v", err)
+	}
+}
+
 func TestMissingRequiredReported(t *testing.T) {
 	// No env set at all → all required vars reported.
 	for _, k := range []string{

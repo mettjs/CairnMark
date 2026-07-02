@@ -49,7 +49,9 @@ func scanFile(r row) (*metadata.File, error) {
 }
 
 // List returns live records matching the filter, newest first, filtered by
-// content type and/or JSONB tag containment, with limit/offset pagination.
+// content type and/or JSONB tag containment, with keyset pagination. Ordering
+// is by id descending — ids are UUIDv7, so id order is creation order and the
+// primary-key index serves both the sort and the cursor bound.
 func (r *Repo) List(ctx context.Context, filter metadata.ListFilter) ([]*metadata.File, error) {
 	var conds []string
 	var args []any
@@ -58,6 +60,11 @@ func (r *Repo) List(ctx context.Context, filter metadata.ListFilter) ([]*metadat
 	if filter.ContentType != "" {
 		args = append(args, filter.ContentType)
 		conds = append(conds, fmt.Sprintf("content_type = $%d", len(args)))
+	}
+
+	if filter.Cursor != "" {
+		args = append(args, filter.Cursor)
+		conds = append(conds, fmt.Sprintf("id < $%d::uuid", len(args)))
 	}
 
 	// JSONB containment (@>) is GIN-indexed (files_metadata_gin): the row's
@@ -80,11 +87,9 @@ func (r *Repo) List(ctx context.Context, filter metadata.ListFilter) ([]*metadat
 	}
 	args = append(args, limit)
 	limitClause := fmt.Sprintf(" limit $%d", len(args))
-	args = append(args, max(filter.Offset, 0))
-	offsetClause := fmt.Sprintf(" offset $%d", len(args))
 
 	q := selectColumns + " from files where " + strings.Join(conds, " and ") +
-		" order by created_at desc" + limitClause + offsetClause
+		" order by id desc" + limitClause
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {

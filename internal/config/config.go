@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	HTTPAddr        string        // listen address, e.g. ":8080"
 	ShutdownTimeout time.Duration // graceful shutdown grace period
 	PresignTTL      time.Duration // lifetime of presigned download URLs
+	MaxUploadBytes  int64         // reject uploads larger than this; 0 disables the cap
 
 	Postgres Postgres
 	Storage  Storage
@@ -90,6 +92,12 @@ func Load() (Config, error) {
 	}
 	if err := getduration("CAIRNMARK_IDEMPOTENCY_TTL", &cfg.GC.IdempotencyTTL); err != nil {
 		return Config{}, err
+	}
+	if err := getint64("CAIRNMARK_MAX_UPLOAD_BYTES", &cfg.MaxUploadBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.MaxUploadBytes < 0 {
+		return Config{}, fmt.Errorf("config: CAIRNMARK_MAX_UPLOAD_BYTES must be >= 0 (0 disables the cap), got %d", cfg.MaxUploadBytes)
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -178,6 +186,21 @@ func getduration(key string, dst *time.Duration) error {
 		return nil
 	}
 	parsed, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("config: %s: %w", key, err)
+	}
+	*dst = parsed
+	return nil
+}
+
+// getint64 overrides *dst from the env var if set, returning a wrapped error on
+// a malformed value. An unset var leaves the existing default in place.
+func getint64(key string, dst *int64) error {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return fmt.Errorf("config: %s: %w", key, err)
 	}

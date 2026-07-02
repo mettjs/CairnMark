@@ -39,11 +39,16 @@ type File struct {
 }
 
 // ListFilter narrows a List query. Zero values mean "no constraint".
+//
+// Pagination is keyset-based: Cursor is the id of the last file of the previous
+// page (exclusive), and a page holds the next Limit files older than it. Ids
+// are UUIDv7 — time-ordered — so paging by id descending walks newest-first
+// without the deep-page cost of OFFSET.
 type ListFilter struct {
 	ContentType string
 	Tags        map[string]any // matched against the JSONB metadata column
 	Limit       int
-	Offset      int
+	Cursor      string // exclusive upper-bound file id; empty means first page
 }
 
 // Repository persists File records. Implementations own all SQL.

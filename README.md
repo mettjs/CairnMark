@@ -31,6 +31,8 @@ behind your own gateway).
   a crash-safe atomic commit.
 - **One backend, many stores** — `minio-go` talks to MinIO, AWS S3, or any
   S3-compatible store. Only config changes.
+- **Prometheus metrics** — per-route request counts and latency plus GC
+  reclamation counters, exposed at `/metrics`.
 
 ## Quickstart
 
@@ -66,6 +68,7 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `CAIRNMARK_HTTP_ADDR` | `:8080` | HTTP listen address |
 | `CAIRNMARK_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown grace period |
 | `CAIRNMARK_PRESIGN_TTL` | `15m` | Lifetime of presigned download URLs |
+| `CAIRNMARK_MAX_UPLOAD_BYTES` | `0` (uncapped) | Max upload body size in bytes; larger uploads get `413` |
 | `CAIRNMARK_GC_INTERVAL` | `5m` | Reconciliation sweep cadence (`<=0` disables GC — and all the cleanup below) |
 | `CAIRNMARK_GC_GRACE_PERIOD` | `1h` | Min age before an unreferenced object is reclaimed; **must exceed your longest upload** |
 | `CAIRNMARK_IDEMPOTENCY_TTL` | `24h` | How long upload idempotency keys are kept before the GC sweep expires them (`<=0` disables expiry) |
@@ -94,8 +97,9 @@ rewritten afterward).
 | `GET` | `/files/{id}/metadata` | Metadata as JSON. |
 | `PATCH` | `/files/{id}/metadata` | Merge tags (or `?mode=replace`). Body is a JSON object. |
 | `DELETE` | `/files/{id}` | Soft delete (`204`). Object purged asynchronously. |
-| `GET` | `/files` | List/search: `?content_type=`, `?tag.<k>=<v>`, `?limit=`, `?offset=`. |
+| `GET` | `/files` | List/search: `?content_type=`, `?tag.<k>=<v>`, `?limit=`, `?cursor=`. |
 | `GET` | `/healthz` · `/readyz` | Liveness / readiness. |
+| `GET` | `/metrics` | Prometheus exposition. |
 
 **Upload inputs:** filename from `?filename=` or a `Content-Disposition` header;
 content type from `Content-Type` (sniffed when absent); tags from `?tag.<k>=<v>`
@@ -105,9 +109,10 @@ query params and/or an `X-Metadata` JSON-object header (for typed/nested values)
 a retried `POST /files` safe. The first request for a key uploads and records the
 result; a retry returns the original `201` (with `Idempotency-Replayed: true`)
 instead of creating a duplicate. A retry while the first is still in flight gets
-`409 Conflict` — back off and retry. Keys expire after `CAIRNMARK_IDEMPOTENCY_TTL`
-(default 24h). Note: the payload is not fingerprinted, so reusing a key with
-different content returns the original result — keys must be unique per upload.
+`409 Conflict` with a `Retry-After` header saying when to ask again. Keys expire
+after `CAIRNMARK_IDEMPOTENCY_TTL` (default 24h). Note: the payload is not
+fingerprinted, so reusing a key with different content returns the original
+result — keys must be unique per upload.
 
 Example responses:
 
@@ -125,12 +130,17 @@ Example responses:
 }
 
 // GET /files?tag.project=cairnmark → 200
-{ "files": [ /* …file objects… */ ], "limit": 50, "offset": 0, "count": 1 }
+{ "files": [ /* …file objects… */ ], "limit": 50, "count": 1 }
 ```
 
 `updated_at` is `null` until the file's metadata is first changed via `PATCH` —
 a quick way to tell an untouched original from an edited record. `limit` defaults
 to 50 (max 500) and the response echoes the value actually applied.
+
+**Pagination** is keyset-based: a full page carries a `next_cursor` — pass it
+back as `?cursor=` to fetch the files older than it. A page without
+`next_cursor` is the last one. Cursors stay accurate under concurrent
+uploads/deletes and don't slow down on deep pages the way `OFFSET` does.
 
 ## Example clients
 
@@ -243,6 +253,7 @@ internal/files    service layer: orchestrates storage + metadata, owns the write
 internal/storage  Backend interface  ──  storage/s3 (minio-go, the only backend)
 internal/metadata Repository interface ── metadata/postgres (pgx; the only SQL)
 internal/gc       background reconciliation: purge soft-deletes, reclaim orphans
+internal/metrics  Prometheus metric definitions + the /metrics handler
 internal/config   env loading (imported only by cmd/server)
 migrations        embedded, versioned SQL (goose)
 ```

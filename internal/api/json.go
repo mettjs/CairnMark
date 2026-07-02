@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mettjs/cairnmark/internal/files"
 )
+
+// idempotencyRetryAfterSeconds is the Retry-After hint sent with a 409
+// idempotency conflict — long enough for most in-flight uploads to finish.
+const idempotencyRetryAfterSeconds = 30
 
 // fileResponse is the public JSON shape of a file record. The internal storage
 // key is deliberately omitted — callers address files by id only.
@@ -51,6 +56,9 @@ func (h *fileHandler) writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, files.ErrInvalidID):
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 	case errors.Is(err, files.ErrIdempotencyConflict):
+		// The conflicting upload is still in flight; tell the client when to ask
+		// again rather than leaving the backoff to guesswork.
+		w.Header().Set("Retry-After", strconv.Itoa(idempotencyRetryAfterSeconds))
 		writeJSON(w, http.StatusConflict, errorBody(err.Error()))
 	default:
 		h.log.Error("request failed", "err", err)

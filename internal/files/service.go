@@ -156,8 +156,13 @@ func (s *Service) OpenRange(ctx context.Context, id string, offset, length int64
 }
 
 // List returns file records matching the filter, newest first. The metadata
-// repository applies tag containment against the GIN index.
+// repository applies tag containment against the GIN index and keyset
+// pagination by id. A malformed cursor is ErrInvalidID — it must be a file id
+// handed out by a previous page.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]*File, error) {
+	if filter.Cursor != "" && !validID(filter.Cursor) {
+		return nil, ErrInvalidID
+	}
 	files, err := s.repo.List(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("files: list: %w", err)

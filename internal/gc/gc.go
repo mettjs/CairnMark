@@ -49,6 +49,7 @@ type Collector struct {
 	grace    time.Duration
 	idemTTL  time.Duration
 	batch    int
+	onSweep  func(Stats, error)
 }
 
 // Stats reports what a single sweep reclaimed.
@@ -67,6 +68,11 @@ func New(store Store, repo Repo, log *slog.Logger, interval, grace, idemTTL time
 	}
 }
 
+// OnSweep registers fn to observe every sweep's outcome. The composition root
+// wires metrics through it, so this package stays instrumentation-free. Call
+// it before Run; it is not safe to change while the collector is running.
+func (c *Collector) OnSweep(fn func(Stats, error)) { c.onSweep = fn }
+
 // Run sweeps on a ticker until ctx is cancelled. A non-positive interval
 // disables the collector (it returns immediately).
 func (c *Collector) Run(ctx context.Context) {
@@ -84,6 +90,9 @@ func (c *Collector) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			stats, err := c.RunOnce(ctx)
+			if c.onSweep != nil {
+				c.onSweep(stats, err)
+			}
 			if err != nil {
 				c.log.Error("gc sweep failed", "err", err)
 				continue

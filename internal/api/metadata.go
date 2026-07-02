@@ -76,7 +76,8 @@ func (h *fileHandler) patchMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 // list returns files filtered by content_type and tag.<key> params, newest
-// first, with limit/offset pagination.
+// first, with keyset pagination: pass a page's next_cursor back as ?cursor= to
+// fetch the files older than it.
 func (h *fileHandler) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, err := atoiDefault(q.Get("limit"), 0)
@@ -84,18 +85,13 @@ func (h *fileHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeClientError(w, http.StatusBadRequest, "limit must be an integer")
 		return
 	}
-	offset, err := atoiDefault(q.Get("offset"), 0)
-	if err != nil {
-		writeClientError(w, http.StatusBadRequest, "offset must be an integer")
-		return
-	}
-	limit, offset = clampPage(limit, offset)
+	limit = clampLimit(limit)
 
 	results, err := h.svc.List(r.Context(), files.ListFilter{
 		ContentType: q.Get("content_type"),
 		Tags:        tagParams(q),
 		Limit:       limit,
-		Offset:      offset,
+		Cursor:      q.Get("cursor"),
 	})
 	if err != nil {
 		h.writeError(w, err)
@@ -106,14 +102,21 @@ func (h *fileHandler) list(w http.ResponseWriter, r *http.Request) {
 	for _, f := range results {
 		items = append(items, toResponse(f))
 	}
-	writeJSON(w, http.StatusOK, listResponse{Files: items, Limit: limit, Offset: offset, Count: len(items)})
+	resp := listResponse{Files: items, Limit: limit, Count: len(items)}
+	// A full page may have more behind it; a short page is definitely the last.
+	// When the total is an exact multiple of limit, the final cursor yields one
+	// empty page — the unambiguous end-of-list signal either way is no cursor.
+	if len(items) == limit {
+		resp.NextCursor = items[len(items)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type listResponse struct {
-	Files  []fileResponse `json:"files"`
-	Limit  int            `json:"limit"`
-	Offset int            `json:"offset"`
-	Count  int            `json:"count"`
+	Files      []fileResponse `json:"files"`
+	Limit      int            `json:"limit"`
+	Count      int            `json:"count"`
+	NextCursor string         `json:"next_cursor,omitempty"`
 }
 
 func atoiDefault(s string, def int) (int, error) {
@@ -123,17 +126,14 @@ func atoiDefault(s string, def int) (int, error) {
 	return strconv.Atoi(s)
 }
 
-// clampPage normalizes limit/offset so the values returned in the response are
+// clampLimit normalizes the page size so the value returned in the response is
 // exactly what was applied to the query.
-func clampPage(limit, offset int) (int, int) {
+func clampLimit(limit int) int {
 	if limit <= 0 {
-		limit = listDefaultLimit
+		return listDefaultLimit
 	}
 	if limit > listMaxLimit {
-		limit = listMaxLimit
+		return listMaxLimit
 	}
-	if offset < 0 {
-		offset = 0
-	}
-	return limit, offset
+	return limit
 }

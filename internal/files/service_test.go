@@ -230,6 +230,18 @@ func TestNotFoundTranslation(t *testing.T) {
 	}
 }
 
+func TestListRejectsMalformedCursor(t *testing.T) {
+	ctx := context.Background()
+	svc := files.New(memory.New(), newFakeRepo())
+
+	if _, err := svc.List(ctx, files.ListFilter{Cursor: "not-a-uuid"}); !errors.Is(err, files.ErrInvalidID) {
+		t.Fatalf("List: expected files.ErrInvalidID for bad cursor, got %v", err)
+	}
+	if _, err := svc.List(ctx, files.ListFilter{}); err != nil {
+		t.Fatalf("List without cursor: %v", err)
+	}
+}
+
 func TestInvalidID(t *testing.T) {
 	ctx := context.Background()
 	svc := files.New(memory.New(), newFakeRepo())

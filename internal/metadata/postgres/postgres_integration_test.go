@@ -128,6 +128,60 @@ func TestRepoCRUDAndSoftDelete(t *testing.T) {
 	}
 }
 
+func TestRepoListKeysetPagination(t *testing.T) {
+	ctx := context.Background()
+	r := New(testPool)
+
+	// A tag value unique to this run isolates the walk from other rows.
+	tags := map[string]any{"pagetest": uuid.NewString()}
+	want := map[string]bool{}
+	for range 5 {
+		f := newFile()
+		f.Metadata = tags
+		if err := r.Create(ctx, f); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Purge(ctx, f.ID) })
+		want[f.ID] = true
+	}
+
+	filter := metadata.ListFilter{Tags: tags, Limit: 2}
+	seen := map[string]bool{}
+	last := ""
+	for pages := 0; ; pages++ {
+		if pages > 5 {
+			t.Fatal("pagination did not terminate")
+		}
+		page, err := r.List(ctx, filter)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, f := range page {
+			if seen[f.ID] {
+				t.Fatalf("file %s returned on two pages", f.ID)
+			}
+			if last != "" && f.ID >= last {
+				t.Fatalf("id ordering violated: %s after %s", f.ID, last)
+			}
+			seen[f.ID] = true
+			last = f.ID
+		}
+		if len(page) < filter.Limit {
+			break
+		}
+		filter.Cursor = page[len(page)-1].ID
+	}
+
+	if len(seen) != len(want) {
+		t.Fatalf("walked %d files, want %d", len(seen), len(want))
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Fatalf("file %s never returned by the cursor walk", id)
+		}
+	}
+}
+
 func TestRepoUpdateMetadataMergeReplace(t *testing.T) {
 	ctx := context.Background()
 	r := New(testPool)
