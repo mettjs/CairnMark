@@ -99,6 +99,30 @@ func TestMaxUploadBytes(t *testing.T) {
 	}
 }
 
+func TestMalformedBoolRejected(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CAIRNMARK_S3_USE_SSL", "yes")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CAIRNMARK_S3_USE_SSL") {
+		t.Fatalf("expected rejection of malformed bool, got %v", err)
+	}
+}
+
+func TestNonPositiveDurationsRejected(t *testing.T) {
+	setRequired(t)
+
+	t.Setenv("CAIRNMARK_SHUTDOWN_TIMEOUT", "-5s")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CAIRNMARK_SHUTDOWN_TIMEOUT") {
+		t.Fatalf("expected rejection of negative shutdown timeout, got %v", err)
+	}
+
+	t.Setenv("CAIRNMARK_SHUTDOWN_TIMEOUT", "10s")
+	t.Setenv("CAIRNMARK_PRESIGN_TTL", "0s")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CAIRNMARK_PRESIGN_TTL") {
+		t.Fatalf("expected rejection of zero presign TTL, got %v", err)
+	}
+}
+
 func TestMissingRequiredReported(t *testing.T) {
 	// No env set at all → all required vars reported.
 	for _, k := range []string{

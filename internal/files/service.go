@@ -140,19 +140,17 @@ func (s *Service) Open(ctx context.Context, id string) (*File, io.ReadCloser, er
 	return f, newVerifyingReader(rc, f.ChecksumSHA256), nil
 }
 
-// OpenRange streams a byte range [offset, offset+length) through this process.
+// OpenRange streams a byte range [offset, offset+length) of an already-fetched
+// record through this process — the caller resolves f via Metadata first (it
+// needs the size to validate the range), so no second lookup happens here.
 // Partial reads cannot be checksum-verified against the whole-object hash, so
 // the reader is returned unverified. The caller must Close it.
-func (s *Service) OpenRange(ctx context.Context, id string, offset, length int64) (*File, io.ReadCloser, error) {
-	f, err := s.Metadata(ctx, id)
-	if err != nil {
-		return nil, nil, err
-	}
+func (s *Service) OpenRange(ctx context.Context, f *File, offset, length int64) (io.ReadCloser, error) {
 	rc, err := s.backend.GetRange(ctx, f.StorageKey, offset, length)
 	if err != nil {
-		return nil, nil, translateNotFound(err)
+		return nil, translateNotFound(err)
 	}
-	return f, rc, nil
+	return rc, nil
 }
 
 // List returns file records matching the filter, newest first. The metadata

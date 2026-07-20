@@ -54,10 +54,18 @@ func (r *Repo) CreateForKey(ctx context.Context, f *metadata.File, key string) e
 	if err := insertFile(ctx, tx, f); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`update idempotency_keys set status = $2, file_id = $3 where key = $1`,
-		key, metadata.IdempotencyCompleted, f.ID); err != nil {
+		key, metadata.IdempotencyCompleted, f.ID)
+	if err != nil {
 		return fmt.Errorf("postgres: complete idempotency key: %w", err)
+	}
+	// Zero rows means the claimed key vanished mid-upload (e.g. GC expired a
+	// pending row past its TTL). Committing the file anyway would let a retry
+	// re-claim the key and create a duplicate — fail instead; the rollback also
+	// discards the file row, and the caller cleans up the staged object.
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("postgres: complete idempotency key %q: claim no longer exists", key)
 	}
 	return tx.Commit(ctx)
 }

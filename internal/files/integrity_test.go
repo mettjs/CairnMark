@@ -85,7 +85,7 @@ func TestOpenRangeReturnsPartialBytes(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	_, rc, err := svc.OpenRange(ctx, f.ID, 2, 4)
+	rc, err := svc.OpenRange(ctx, f, 2, 4)
 	if err != nil {
 		t.Fatalf("OpenRange: %v", err)
 	}

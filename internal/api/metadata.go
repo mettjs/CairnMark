@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,9 +35,7 @@ func uploadTags(r *http.Request) (map[string]any, error) {
 			return nil, fmt.Errorf("X-Metadata must be a JSON object: %v", err)
 		}
 	}
-	for k, v := range tagParams(r.URL.Query()) {
-		tags[k] = v
-	}
+	maps.Copy(tags, tagParams(r.URL.Query()))
 	if len(tags) == 0 {
 		return nil, nil
 	}
@@ -53,11 +53,21 @@ func tagParams(q url.Values) map[string]any {
 	return tags
 }
 
+// maxMetadataBodyBytes caps a PATCH metadata body. Tags are small; without a
+// cap the decoded map grows with whatever the client streams.
+const maxMetadataBodyBytes = 1 << 20 // 1 MiB
+
 // patchMetadata merges (default) or replaces (?mode=replace) the JSONB tags of
 // a file. The body is a JSON object.
 func (h *fileHandler) patchMetadata(w http.ResponseWriter, r *http.Request) {
 	var tags map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&tags); err != nil {
+	body := http.MaxBytesReader(w, r.Body, maxMetadataBodyBytes)
+	if err := json.NewDecoder(body).Decode(&tags); err != nil {
+		if tooLarge, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			writeClientError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("metadata body exceeds the %d-byte limit", tooLarge.Limit))
+			return
+		}
 		writeClientError(w, http.StatusBadRequest, "body must be a JSON object: "+err.Error())
 		return
 	}

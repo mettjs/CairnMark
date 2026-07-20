@@ -54,6 +54,26 @@ func TestUploadIdempotentInProgressConflicts(t *testing.T) {
 	}
 }
 
+func TestUploadIdempotentDeletedResultIsGone(t *testing.T) {
+	ctx := context.Background()
+	svc := files.New(memory.New(), newFakeRepo())
+
+	first, _, err := svc.UploadIdempotent(ctx, "key-gone",
+		files.UploadInput{Size: 7, Body: bytes.NewReader([]byte("payload"))})
+	if err != nil {
+		t.Fatalf("first upload: %v", err)
+	}
+	if err := svc.Delete(ctx, first.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	_, _, err = svc.UploadIdempotent(ctx, "key-gone",
+		files.UploadInput{Size: 7, Body: bytes.NewReader([]byte("payload"))})
+	if !errors.Is(err, files.ErrIdempotencyResultGone) {
+		t.Fatalf("expected ErrIdempotencyResultGone after result deleted, got %v", err)
+	}
+}
+
 func TestUploadIdempotentReleasesOnFailure(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()

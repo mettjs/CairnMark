@@ -2,6 +2,10 @@
 #   docker compose up -d --build
 # The service auto-applies migrations and creates its bucket on boot.
 #
+# DEV ONLY: this file ships hard-coded credentials and publishes Postgres
+# (5432) and MinIO (9000/9001) on the host. Change every credential and drop
+# the port mappings you don't need before running anywhere non-local.
+#
 # Presigned URLs and the dual endpoint:
 #   The service reaches MinIO over the internal network name (minio:9000), but
 #   presigned download URLs are handed to clients OUTSIDE the Compose network,

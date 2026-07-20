@@ -179,6 +179,50 @@ func TestIdempotencyConflictSetsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestMalformedRangeHeaderIsIgnored(t *testing.T) {
+	h, _ := newTestRouter(0)
+	up := doUpload(t, h, "0123456789", 10)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("seed upload: %d (%s)", up.Code, up.Body)
+	}
+	loc := up.Header().Get("Location")
+
+	// A foreign range unit must be ignored (RFC 9110 §14.2): the request is
+	// served as a normal GET — here, the presign redirect — not a 416.
+	req := httptest.NewRequest("GET", loc, nil)
+	req.Header.Set("Range", "items=0-4")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("ignored range: got %d want 302 (body %s)", rec.Code, rec.Body)
+	}
+
+	// A well-formed but unsatisfiable range still gets its 416.
+	req = httptest.NewRequest("GET", loc, nil)
+	req.Header.Set("Range", "bytes=100-")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("unsatisfiable range: got %d want 416 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestPatchMetadataBodyTooLarge(t *testing.T) {
+	h, _ := newTestRouter(0)
+	up := doUpload(t, h, "abc", 3)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("seed upload: %d (%s)", up.Code, up.Body)
+	}
+
+	huge := `{"pad":"` + strings.Repeat("x", 2<<20) + `"}`
+	req := httptest.NewRequest("PATCH", up.Header().Get("Location")+"/metadata", strings.NewReader(huge))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized metadata body: got %d want 413 (body %s)", rec.Code, rec.Body)
+	}
+}
+
 func TestListKeysetPagination(t *testing.T) {
 	h, _ := newTestRouter(0)
 	for range 5 {

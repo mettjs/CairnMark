@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/mettjs/cairnmark/internal/config"
 )
@@ -13,9 +14,14 @@ import (
 // run starts the HTTP server and blocks until ctx is cancelled (a termination
 // signal), then shuts down gracefully within the configured timeout.
 func run(ctx context.Context, cfg config.Config, handler http.Handler, log *slog.Logger) error {
+	// ReadHeaderTimeout and IdleTimeout guard against connection-exhaustion
+	// (Slowloris). Deliberately no ReadTimeout/WriteTimeout: multi-GB uploads
+	// and downloads are legitimate long-running transfers.
 	srv := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: handler,
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	errCh := make(chan error, 1)

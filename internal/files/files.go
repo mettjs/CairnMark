@@ -23,9 +23,13 @@ var ErrInvalidID = errors.New("files: invalid id")
 var ErrChecksumMismatch = errors.New("files: checksum mismatch")
 
 // ErrIdempotencyConflict means an upload with the same Idempotency-Key is still
-// in progress, or its result is no longer retrievable. The api layer maps it to
-// 409 — the client should retry shortly.
+// in progress. The api layer maps it to 409 — the client should retry shortly.
 var ErrIdempotencyConflict = errors.New("files: idempotency key conflict")
+
+// ErrIdempotencyResultGone means the file an Idempotency-Key produced has since
+// been deleted. Retrying under the same key can never succeed until the key
+// expires, so the api layer maps it to 410 — the client must pick a new key.
+var ErrIdempotencyResultGone = errors.New("files: idempotent result deleted")
 
 // File is the service-level view of a stored file, returned to the api layer.
 type File = metadata.File

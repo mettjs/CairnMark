@@ -63,6 +63,10 @@ type Storage struct {
 // an error if a required value is missing or malformed. As of Phase 1 the
 // Postgres and S3 settings are required — the server connects to both at boot.
 func Load() (Config, error) {
+	storage, err := loadStorage()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		HTTPAddr:        getenv("CAIRNMARK_HTTP_ADDR", ":8080"),
 		ShutdownTimeout: 10 * time.Second,
@@ -70,7 +74,7 @@ func Load() (Config, error) {
 		Postgres: Postgres{
 			DSN: getenv("CAIRNMARK_POSTGRES_DSN", ""),
 		},
-		Storage: loadStorage(),
+		Storage: storage,
 		GC: GC{
 			Interval:       5 * time.Minute,
 			GracePeriod:    time.Hour,
@@ -99,6 +103,12 @@ func Load() (Config, error) {
 	if cfg.MaxUploadBytes < 0 {
 		return Config{}, fmt.Errorf("config: CAIRNMARK_MAX_UPLOAD_BYTES must be >= 0 (0 disables the cap), got %d", cfg.MaxUploadBytes)
 	}
+	if cfg.ShutdownTimeout <= 0 {
+		return Config{}, fmt.Errorf("config: CAIRNMARK_SHUTDOWN_TIMEOUT must be positive, got %s", cfg.ShutdownTimeout)
+	}
+	if cfg.PresignTTL <= 0 {
+		return Config{}, fmt.Errorf("config: CAIRNMARK_PRESIGN_TTL must be positive, got %s", cfg.PresignTTL)
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -109,9 +119,16 @@ func Load() (Config, error) {
 // loadStorage reads the S3 settings. PublicEndpoint/PublicUseSSL default to the
 // service-side endpoint and TLS scheme when not explicitly set, so a single
 // endpoint config keeps working unchanged.
-func loadStorage() Storage {
+func loadStorage() (Storage, error) {
 	endpoint := getenv("CAIRNMARK_S3_ENDPOINT", "")
-	useSSL := getbool("CAIRNMARK_S3_USE_SSL", false)
+	useSSL := false
+	if err := getbool("CAIRNMARK_S3_USE_SSL", &useSSL); err != nil {
+		return Storage{}, err
+	}
+	publicUseSSL := useSSL
+	if err := getbool("CAIRNMARK_S3_PUBLIC_USE_SSL", &publicUseSSL); err != nil {
+		return Storage{}, err
+	}
 	return Storage{
 		Endpoint:       endpoint,
 		PublicEndpoint: getenv("CAIRNMARK_S3_PUBLIC_ENDPOINT", endpoint),
@@ -120,8 +137,8 @@ func loadStorage() Storage {
 		SecretKey:      getenv("CAIRNMARK_S3_SECRET_KEY", ""),
 		Bucket:         getenv("CAIRNMARK_S3_BUCKET", ""),
 		UseSSL:         useSSL,
-		PublicUseSSL:   getbool("CAIRNMARK_S3_PUBLIC_USE_SSL", useSSL),
-	}
+		PublicUseSSL:   publicUseSSL,
+	}, nil
 }
 
 // validate enforces the values the running service cannot start without.
@@ -208,13 +225,18 @@ func getint64(key string, dst *int64) error {
 	return nil
 }
 
-func getbool(key string, fallback bool) bool {
-	switch os.Getenv(key) {
-	case "1", "true", "TRUE", "True":
-		return true
-	case "0", "false", "FALSE", "False":
-		return false
-	default:
-		return fallback
+// getbool overrides *dst from the env var if set, returning a wrapped error on
+// a malformed value — a TLS toggle silently falling back to its default is a
+// misconfiguration, not a preference. An unset var leaves the default in place.
+func getbool(key string, dst *bool) error {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return nil
 	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("config: %s: %w", key, err)
+	}
+	*dst = parsed
+	return nil
 }

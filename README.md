@@ -109,7 +109,9 @@ query params and/or an `X-Metadata` JSON-object header (for typed/nested values)
 a retried `POST /files` safe. The first request for a key uploads and records the
 result; a retry returns the original `201` (with `Idempotency-Replayed: true`)
 instead of creating a duplicate. A retry while the first is still in flight gets
-`409 Conflict` with a `Retry-After` header saying when to ask again. Keys expire
+`409 Conflict` with a `Retry-After` header saying when to ask again; if the file
+the key produced has since been deleted, the retry gets `410 Gone` — switch to a
+new key. Keys expire
 after `CAIRNMARK_IDEMPOTENCY_TTL` (default 24h). Note: the payload is not
 fingerprinted, so reusing a key with different content returns the original
 result — keys must be unique per upload.
@@ -142,7 +144,20 @@ back as `?cursor=` to fetch the files older than it. A page without
 `next_cursor` is the last one. Cursors stay accurate under concurrent
 uploads/deletes and don't slow down on deep pages the way `OFFSET` does.
 
-## Example clients
+## Official SDKs
+
+Hand-written clients for three languages, all exposing the same surface:
+streaming uploads/downloads, typed errors, safe retries with idempotency
+keys, lazy pagination, and client-side checksum verification (the piece raw
+HTTP can't give you — presigned downloads bypass the service, so only the
+client can compare the stored SHA-256). Each SDK's README is a complete
+integration guide; all require server ≥ v1.1.0.
+
+| Language | Repo | Install |
+|---|---|---|
+| Go | [`cairnmark-go`](https://github.com/mettjs/cairnmark-go) | `go get github.com/mettjs/cairnmark-go` |
+| Python (sync + async) | [`cairnmark-python`](https://github.com/mettjs/cairnmark-python) | `pip install cairnmark` |
+| Node.js (TypeScript) | [`cairnmark-node`](https://github.com/mettjs/cairnmark-node) | `npm install cairnmark` |
 
 ### Go
 
@@ -150,96 +165,99 @@ uploads/deletes and don't slow down on deep pages the way `OFFSET` does.
 package main
 
 import (
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
+
+	cairnmark "github.com/mettjs/cairnmark-go"
 )
 
 func main() {
-	base := "http://localhost:8080"
-
-	// Upload.
-	resp, err := http.Post(
-		base+"/files?filename=hello.txt&tag.env=demo",
-		"text/plain",
-		strings.NewReader("hello from Go"),
-	)
+	ctx := context.Background()
+	c, err := cairnmark.New("http://localhost:8080")
 	if err != nil {
 		panic(err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	fmt.Println("uploaded:", string(body)) // contains the "id"
 
-	// Download by id (http.Client follows the 302 to the presigned URL).
-	id := "<paste id from above>"
-	dl, err := http.Get(base + "/files/" + id)
+	// Upload with a tag; AutoIdempotency makes retries duplicate-safe.
+	f, err := c.Upload(ctx, cairnmark.UploadInput{
+		Body:            strings.NewReader("hello from Go"),
+		Filename:        "hello.txt",
+		ContentType:     "text/plain",
+		Metadata:        map[string]any{"env": "demo"},
+		AutoIdempotency: true,
+	})
 	if err != nil {
 		panic(err)
 	}
-	defer dl.Body.Close()
-	content, _ := io.ReadAll(dl.Body)
-	fmt.Println("downloaded:", string(content))
+	fmt.Println("uploaded:", f.ID)
+
+	// Download by id — follows the presign redirect and verifies the SHA-256.
+	if _, err := c.DownloadToFile(ctx, f.ID, "hello-copy.txt"); err != nil {
+		panic(err)
+	}
+
+	// Search by tag, lazily across pages.
+	for f, err := range c.ListAll(ctx, cairnmark.ListFilter{Tags: map[string]string{"env": "demo"}}) {
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("found:", f.ID, f.Filename)
+	}
 }
 ```
 
 ### Python
 
-Uses only the standard library (`urllib`); swap in `requests` if you prefer.
+An `AsyncCairnMark` twin exposes the same surface with `await`.
 
 ```python
-import json
-import urllib.request
+from cairnmark import CairnMark
 
-BASE = "http://localhost:8080"
+with CairnMark("http://localhost:8080") as cm:
+    # Upload with a tag; idempotency_key="auto" makes retries duplicate-safe.
+    f = cm.upload(
+        b"hello from Python",
+        filename="hello.txt",
+        content_type="text/plain",
+        metadata={"env": "demo"},
+        idempotency_key="auto",
+    )
+    print("uploaded:", f.id)
 
-# Upload (raw body + headers; tags via query params).
-req = urllib.request.Request(
-    BASE + "/files?filename=hello.txt&tag.env=demo",
-    data=b"hello from Python",
-    headers={"Content-Type": "text/plain"},
-    method="POST",
-)
-with urllib.request.urlopen(req) as resp:
-    meta = json.load(resp)
-file_id = meta["id"]
-print("uploaded:", meta)
+    # Download by id — follows the presign redirect and verifies the SHA-256.
+    cm.download_to_file(f.id, "hello-copy.txt")
 
-# Download by id (urllib follows the 302 to the presigned URL automatically).
-with urllib.request.urlopen(f"{BASE}/files/{file_id}") as resp:
-    print("downloaded:", resp.read().decode())
-
-# Search by tag.
-with urllib.request.urlopen(f"{BASE}/files?tag.env=demo") as resp:
-    print("matches:", json.load(resp)["count"])
+    # Search by tag, lazily across pages.
+    for file in cm.iter_files(tags={"env": "demo"}):
+        print("found:", file.id, file.filename)
 ```
 
 ### Node.js
 
-Built-in `fetch` (Node 18+), no dependencies. Save as `client.js`, run `node client.js`.
+Zero runtime dependencies (global `fetch` + Web Streams, Node 18+), ESM.
 
 ```js
-const BASE = "http://localhost:8080";
+import { CairnMark } from "cairnmark";
 
-(async () => {
-  // Upload (raw body + headers; tags via query params).
-  const up = await fetch(`${BASE}/files?filename=hello.txt&tag.env=demo`, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: "hello from Node",
-  });
-  const meta = await up.json();
-  console.log("uploaded:", meta);
+const cm = new CairnMark("http://localhost:8080");
 
-  // Download by id (fetch follows the 302 redirect to the presigned URL).
-  const dl = await fetch(`${BASE}/files/${meta.id}`);
-  console.log("downloaded:", await dl.text());
+// Upload with a tag; idempotencyKey: "auto" makes retries duplicate-safe.
+const f = await cm.upload("hello from Node", {
+  filename: "hello.txt",
+  contentType: "text/plain",
+  metadata: { env: "demo" },
+  idempotencyKey: "auto",
+});
+console.log("uploaded:", f.id);
 
-  // Search by tag.
-  const found = await fetch(`${BASE}/files?tag.env=demo`).then((r) => r.json());
-  console.log("matches:", found.count);
-})();
+// Download by id — follows the presign redirect and verifies the SHA-256.
+await cm.downloadToFile(f.id, "hello-copy.txt");
+
+// Search by tag, lazily across pages.
+for await (const file of cm.listAll({ tags: { env: "demo" } })) {
+  console.log("found:", file.id, file.filename);
+}
 ```
 
 ## Architecture

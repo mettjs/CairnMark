@@ -86,13 +86,21 @@ func (b *Backend) ensureBucket(ctx context.Context, region string) error {
 	return nil
 }
 
+// unknownSizePartSize bounds the buffer minio-go allocates per unknown-length
+// upload. Without it, size=-1 makes minio-go assume a 5 TiB object and allocate
+// a ~537 MiB part buffer — a few concurrent chunked uploads would OOM the
+// process. 16 MiB parts cap an unknown-length object at ~160 GB (10000 parts).
+const unknownSizePartSize = 16 << 20
+
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	_, err := b.client.PutObject(ctx, b.bucket, key, r, size, minio.PutObjectOptions{
-		ContentType: contentType,
-	})
+	opts := minio.PutObjectOptions{ContentType: contentType}
+	if size < 0 {
+		opts.PartSize = unknownSizePartSize
+	}
+	_, err := b.client.PutObject(ctx, b.bucket, key, r, size, opts)
 	if err != nil {
 		return fmt.Errorf("s3: put %q: %w", key, err)
 	}

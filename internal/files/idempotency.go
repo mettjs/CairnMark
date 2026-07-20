@@ -24,15 +24,17 @@ func (s *Service) UploadIdempotent(ctx context.Context, key string, in UploadInp
 
 	if !claimed {
 		// Someone else owns the key. Replay if their upload finished and the
-		// file still exists; otherwise it's in progress (or gone) — conflict.
+		// file still exists; a completed key whose file was since deleted is
+		// permanently gone (retrying cannot help); anything else is in progress.
 		if existing != nil && existing.Status == metadata.IdempotencyCompleted && existing.FileID != nil {
 			prior, getErr := s.repo.Get(ctx, *existing.FileID)
 			if getErr == nil {
 				return prior, true, nil
 			}
-			if !errors.Is(getErr, metadata.ErrNotFound) {
-				return nil, false, fmt.Errorf("files: load idempotent result: %w", getErr)
+			if errors.Is(getErr, metadata.ErrNotFound) {
+				return nil, false, ErrIdempotencyResultGone
 			}
+			return nil, false, fmt.Errorf("files: load idempotent result: %w", getErr)
 		}
 		return nil, false, ErrIdempotencyConflict
 	}

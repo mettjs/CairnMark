@@ -154,14 +154,25 @@ func (h *fileHandler) downloadRange(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	offset, length, ok := parseSingleRange(r.Header.Get("Range"), f.SizeBytes)
-	if !ok {
+	offset, length, outcome := parseSingleRange(r.Header.Get("Range"), f.SizeBytes)
+	switch outcome {
+	case rangeIgnore:
+		// RFC 9110 §14.2: a malformed Range header (or a unit we don't
+		// understand) is ignored, not rejected — serve the response this request
+		// would get without the header.
+		if r.URL.Query().Get("download") == "stream" {
+			h.downloadStream(w, r, id)
+		} else {
+			h.downloadRedirect(w, r, id)
+		}
+		return
+	case rangeUnsatisfiable:
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", f.SizeBytes))
-		writeClientError(w, http.StatusRequestedRangeNotSatisfiable, "invalid or unsatisfiable range")
+		writeClientError(w, http.StatusRequestedRangeNotSatisfiable, "unsatisfiable range")
 		return
 	}
 
-	_, rc, err := h.svc.OpenRange(r.Context(), id, offset, length)
+	rc, err := h.svc.OpenRange(r.Context(), f, offset, length)
 	if err != nil {
 		h.writeError(w, err)
 		return

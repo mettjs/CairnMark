@@ -3,6 +3,7 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -73,3 +74,14 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// ReadFrom keeps the underlying ResponseWriter's io.ReaderFrom fast path
+// (sendfile and friends) reachable from io.Copy in streaming handlers, which
+// the wrapping would otherwise hide.
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(w.ResponseWriter, r)
+}
+
+// Unwrap lets http.ResponseController reach optional interfaces (Flusher,
+// deadline control) on the underlying writer.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

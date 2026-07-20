@@ -60,6 +60,11 @@ func (h *fileHandler) writeError(w http.ResponseWriter, err error) {
 		// again rather than leaving the backoff to guesswork.
 		w.Header().Set("Retry-After", strconv.Itoa(idempotencyRetryAfterSeconds))
 		writeJSON(w, http.StatusConflict, errorBody(err.Error()))
+	case errors.Is(err, files.ErrIdempotencyResultGone):
+		// Retrying under this key can never succeed — no Retry-After; the client
+		// must switch to a fresh key.
+		writeJSON(w, http.StatusGone,
+			errorBody("the file created under this Idempotency-Key was deleted; use a new key"))
 	default:
 		h.log.Error("request failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("internal server error"))
