@@ -1,11 +1,15 @@
 //go:build integration
 
-// Integration tests for the s3 backend. Run against a live MinIO/S3:
+// Integration tests for the s3 backend. Run against any live S3-compatible
+// store; the Compose default is RustFS:
 //
-//	docker compose up -d minio
+//	docker compose up -d rustfs
 //	CAIRNMARK_S3_ENDPOINT=localhost:9000 CAIRNMARK_S3_ACCESS_KEY=cairnmark \
 //	CAIRNMARK_S3_SECRET_KEY=cairnmark-secret CAIRNMARK_S3_BUCKET=cairnmark-it \
 //	go test -tags=integration ./internal/storage/s3/
+//
+// For MinIO instead: docker compose -f docker-compose.yml -f compose.minio.yml
+// up -d minio  (same endpoint and credentials).
 package s3
 
 import (

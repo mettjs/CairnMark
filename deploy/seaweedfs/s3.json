@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "cairnmark",
+      "credentials": [
+        { "accessKey": "cairnmark", "secretKey": "cairnmark-secret" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

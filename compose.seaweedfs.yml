@@ -1,0 +1,82 @@
+# Overlay: run the stack on SeaweedFS instead of the default RustFS.
+#
+#   docker compose -f docker-compose.yml -f compose.seaweedfs.yml up -d --build
+#
+# SWITCHING BACKENDS REQUIRES A TEARDOWN FIRST:
+#
+#   docker compose down            # or `down -v` to discard the data too
+#   docker compose -f docker-compose.yml -f compose.seaweedfs.yml up -d --build
+#
+# Compose will not stop the default substrate on your behalf: a service parked
+# in an inactive profile is still a *defined* service, not an orphan, so
+# `--remove-orphans` leaves it running. It keeps its published ports, the
+# incoming substrate fails to bind them ("port is already allocated"), and you
+# end up with a half-started stack. `down` first and the swap is clean.
+#
+# Nothing in CairnMark is backend-specific — this overlay only swaps the
+# substrate container and repoints the service's two S3 endpoint vars. Note that
+# SeaweedFS serves S3 on 8333, not 9000, which is why both vars are restated
+# here; `validateEndpoint` accepts any host:port, so no code cares.
+#
+# Two Compose mechanics make this work, both non-obvious:
+#   1. `depends_on` MERGES across files rather than being replaced, so without
+#      `!override` the base file's `rustfs` entry survives here and Compose
+#      rejects the project ("depends on undefined service rustfs").
+#   2. `rustfs` is parked in a profile that is never activated, so it stays
+#      defined (satisfying any lingering reference) but never starts.
+services:
+  cairnmark:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      CAIRNMARK_S3_ENDPOINT: "seaweedfs:8333"        # internal: service → store
+      CAIRNMARK_S3_PUBLIC_ENDPOINT: "localhost:8333" # external: presigned URLs
+
+  rustfs:
+    profiles: ["donotstart"]
+
+  # SeaweedFS — S3-compatible object storage, Apache-2.0, in production since 2012.
+  # The most mature of the three backends; pick it when the data matters more
+  # than the convenience of matching the default's port.
+  #
+  # CREDENTIALS ARE NOT OPTIONAL HERE. Started without -s3.config, SeaweedFS's S3
+  # gateway runs fully anonymous: it ignores the SigV4 signature entirely, so the
+  # stack would appear to work while serving an open bucket to anyone who can
+  # reach the port. deploy/seaweedfs/s3.json defines the single identity this
+  # stack uses, and its keys must match the CAIRNMARK_S3_*_KEY values in the base
+  # compose file.
+  #
+  # That identity holds Admin, which is broader than CairnMark's actual workload
+  # (Read/Write/List/Tagging). It needs it because the service creates its own
+  # bucket on boot (storage/s3.ensureBucket), and bucket creation is an admin
+  # action in SeaweedFS. If you adapt this file for a real deployment,
+  # pre-create the bucket and drop Admin — do not copy a store-admin credential
+  # into production just because the dev stack was convenient.
+  #
+  # -ip=seaweedfs makes the server advertise (and bind to) the Compose network
+  # name rather than loopback. That is required for the internal components to
+  # address each other, and it is why the healthcheck below targets
+  # `seaweedfs:8333` — a localhost probe gets "connection refused" forever and
+  # the container never turns healthy.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.46
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/config/s3.json -ip=seaweedfs
+    ports:
+      - "8333:8333"   # S3 API
+      - "8888:8888"   # filer web UI — browse objects under /buckets/
+    volumes:
+      - seaweeddata:/data
+      - ./deploy/seaweedfs/s3.json:/config/s3.json:ro
+    healthcheck:
+      # Service name, NOT localhost — see the -ip note above. SeaweedFS takes
+      # ~20s to come up (vs ~2s RustFS, ~8s MinIO), hence the generous retries.
+      test: ["CMD", "wget", "-qO-", "http://seaweedfs:8333/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  seaweeddata:

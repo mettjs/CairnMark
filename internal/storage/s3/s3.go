@@ -1,6 +1,6 @@
 // Package s3 is the minio-go implementation of storage.Backend. It is the only
-// concrete backend; it talks to MinIO, AWS S3, or any S3-compatible store,
-// differing only by Options.
+// concrete backend; it speaks plain S3, so it talks to RustFS, MinIO, SeaweedFS,
+// AWS S3, or any S3-compatible store, differing only by Options.
 package s3
 
 import (

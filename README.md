@@ -29,8 +29,9 @@ behind your own gateway).
 - **Idempotent uploads** — an optional `Idempotency-Key` header makes retried
   uploads safe: a retry replays the original result instead of duplicating, with
   a crash-safe atomic commit.
-- **One backend, many stores** — `minio-go` talks to MinIO, AWS S3, or any
-  S3-compatible store. Only config changes.
+- **One backend, many stores** — the storage layer speaks plain S3. RustFS,
+  SeaweedFS, and MinIO each ship as a ready-to-run Compose setup; AWS S3 or any
+  other S3-compatible store needs only config changes.
 - **Prometheus metrics** — per-route request counts and latency plus GC
   reclamation counters, exposed at `/metrics`.
 
@@ -42,7 +43,7 @@ Requires only Docker. From a clone:
 docker compose up -d --build
 ```
 
-That starts CairnMark on `:8080` plus Postgres and MinIO — no separate installs.
+That starts CairnMark on `:8080` plus Postgres and RustFS — no separate installs.
 The service applies its migrations and creates its bucket on boot. Then:
 
 ```sh
@@ -58,6 +59,66 @@ curl "http://localhost:8080/files?tag.project=cairnmark"      # search by tag
 ```
 
 Or run the scripted demo: [`examples/quickstart.sh`](examples/quickstart.sh).
+
+The object store's web console is at
+<http://localhost:9001/rustfs/console/> — note the path; the root of `:9001`
+answers as the S3 API, not the console.
+
+## Choosing a storage backend
+
+CairnMark is not tied to any object store: it speaks plain S3. Three backends ship
+as ready-to-run Compose setups; switching needs no edit to the base file and no
+code change — only a different `-f` flag.
+
+**Stop the running stack before switching**, though: Compose won't take the old
+substrate down for you (a service parked in an inactive profile isn't an orphan,
+so even `--remove-orphans` leaves it running), and it keeps port 9000 bound, so
+the incoming store fails to start.
+
+```sh
+docker compose down     # add -v to discard the stored objects too
+```
+
+| | Default | How to run it | Why you'd pick it |
+|---|---|---|---|
+| **RustFS** `1.0.0-rc.6` | ✅ | `docker compose up -d --build` | Actively maintained, Apache-2.0, drop-in on port 9000. **Pre-1.0.** |
+| **SeaweedFS** `4.46` | | `docker compose -f docker-compose.yml -f compose.seaweedfs.yml up -d --build` | The most mature — Apache-2.0, in production since 2012. Serves S3 on **8333**, not 9000. |
+| **MinIO** *(pinned)* | | `docker compose -f docker-compose.yml -f compose.minio.yml up -d --build` | The most familiar, and where your existing data probably is. **Frozen** — see below. |
+
+Each publishes a web UI: RustFS at <http://localhost:9001/rustfs/console/>,
+MinIO at <http://localhost:9001>, SeaweedFS's filer browser at
+<http://localhost:8888> (objects live under `/buckets/`).
+
+> **Already have data in the old MinIO volume?** Use the MinIO row above. Earlier
+> versions of this compose file stored objects in a `miniodata` volume;
+> `compose.minio.yml` still declares it, so running that overlay reattaches your
+> existing bucket untouched. The RustFS default uses a separate `rustfsdata`
+> volume and therefore starts **empty** — your Postgres rows would survive while
+> the objects they point at would not be there, giving you `404`s on download.
+> Switch deliberately, and migrate the objects first if you want the default.
+
+**The default is chosen for a clean first run, not as a production
+recommendation.** All three pass every operation CairnMark performs — round-trip,
+ranged reads, unknown-size multipart, presigned GET, listing past the 1000-key
+page boundary, and both GC reclamation paths — so this is a choice about
+maintenance posture, not capability. For production data, SeaweedFS is the
+conservative pick: it is the only one that is neither pre-1.0 nor frozen.
+
+**On MinIO.** It stopped publishing community binaries on 2025-10-23 and pulled
+its Docker Hub images, so `minio/minio:latest` no longer resolves and the server
+repo is archived. `compose.minio.yml` therefore pins the last community release
+from the quay.io mirror, `RELEASE.2025-09-07T16-13-09Z` — a fixed tag on purpose,
+since no newer community release is coming. That build still serves the full AGPL
+console at the root of `:9001` (unlike RustFS, which serves its console under
+`/rustfs/console/`). It also predates the fix for **CVE-2025-62506**,
+which requires credentials for a *restricted service or STS account* to exploit;
+this stack mints neither, so the precondition doesn't exist as shipped — but
+don't issue scoped service-account keys from it. Full reasoning is in
+[`compose.minio.yml`](compose.minio.yml).
+
+Note that MinIO the *server* is not `minio-go` the *client library*: the latter is
+a separate, actively maintained project, and it is what CairnMark links against
+regardless of which store you run.
 
 ## Configuration
 
@@ -82,8 +143,12 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `CAIRNMARK_S3_USE_SSL` | `false` | TLS for the service-side endpoint |
 | `CAIRNMARK_S3_PUBLIC_USE_SSL` | = `USE_SSL` | TLS scheme for presigned URLs |
 
+**Port note:** SeaweedFS serves S3 on `8333`; RustFS and MinIO both use `9000`.
+The overlay sets both endpoint vars accordingly — `validateEndpoint` accepts any
+`host:port`, so nothing else changes.
+
 **Public endpoint:** the service may reach the store by an internal name
-(`minio:9000` in Compose) that external clients can't resolve. Set
+(`rustfs:9000` in Compose) that external clients can't resolve. Set
 `CAIRNMARK_S3_PUBLIC_ENDPOINT` to a client-reachable host; presigned URLs are
 signed against it directly (the host is part of the SigV4 signature and can't be
 rewritten afterward).
@@ -268,7 +333,7 @@ Dependencies point inward; the HTTP layer never touches storage directly.
 cmd/server        composition root (DI) — the only place concretes are built
 internal/api      HTTP handlers + routing (stdlib net/http)
 internal/files    service layer: orchestrates storage + metadata, owns the write path
-internal/storage  Backend interface  ──  storage/s3 (minio-go, the only backend)
+internal/storage  Backend interface  ──  storage/s3 (S3 client, the only backend)
 internal/metadata Repository interface ── metadata/postgres (pgx; the only SQL)
 internal/gc       background reconciliation: purge soft-deletes, reclaim orphans
 internal/metrics  Prometheus metric definitions + the /metrics handler
@@ -280,7 +345,7 @@ migrations        embedded, versioned SQL (goose)
 
 ```sh
 go test ./...                    # unit tests (in-memory backend + fake repo)
-go test -tags=integration ./...  # against real Postgres + MinIO (see CONTRIBUTING)
+go test -tags=integration ./...  # against real Postgres + object store (see CONTRIBUTING)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and the integration setup.

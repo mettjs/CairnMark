@@ -1,30 +1,35 @@
-# Full stack: cairnmark + Postgres + MinIO. Start everything with:
+# Full stack: cairnmark + Postgres + RustFS. Start everything with:
 #   docker compose up -d --build
 # The service auto-applies migrations and creates its bucket on boot.
 #
+# Other storage backends — the service is not tied to any of them:
+#   docker compose -f docker-compose.yml -f compose.minio.yml up -d --build
+# See README "Choosing a storage backend". The default is chosen for a clean
+# first run, not as a production recommendation.
+#
 # DEV ONLY: this file ships hard-coded credentials and publishes Postgres
-# (5432) and MinIO (9000/9001) on the host. Change every credential and drop
+# (5432) and RustFS (9000/9001) on the host. Change every credential and drop
 # the port mappings you don't need before running anywhere non-local.
 #
 # Presigned URLs and the dual endpoint:
-#   The service reaches MinIO over the internal network name (minio:9000), but
-#   presigned download URLs are handed to clients OUTSIDE the Compose network,
-#   which cannot resolve "minio". So CAIRNMARK_S3_PUBLIC_ENDPOINT points at the
-#   published MinIO port (localhost:9000). The host is part of the SigV4
-#   signature and cannot be rewritten after signing, so the service signs
-#   against the public endpoint directly.
+#   The service reaches the object store over the internal network name
+#   (rustfs:9000), but presigned download URLs are handed to clients OUTSIDE the
+#   Compose network, which cannot resolve "rustfs". So
+#   CAIRNMARK_S3_PUBLIC_ENDPOINT points at the published port (localhost:9000).
+#   The host is part of the SigV4 signature and cannot be rewritten after
+#   signing, so the service signs against the public endpoint directly.
 services:
   cairnmark:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
     environment:
       CAIRNMARK_HTTP_ADDR: ":8080"
       CAIRNMARK_POSTGRES_DSN: "postgres://cairnmark:cairnmark@postgres:5432/cairnmark?sslmode=disable"
-      CAIRNMARK_S3_ENDPOINT: "minio:9000"           # internal: service → MinIO
+      CAIRNMARK_S3_ENDPOINT: "rustfs:9000"          # internal: service → store
       CAIRNMARK_S3_PUBLIC_ENDPOINT: "localhost:9000" # external: presigned URLs
       CAIRNMARK_S3_ACCESS_KEY: "cairnmark"
       CAIRNMARK_S3_SECRET_KEY: "cairnmark-secret"
@@ -57,23 +62,50 @@ services:
       timeout: 3s
       retries: 5
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  # RustFS — S3-compatible object storage, Apache-2.0, pinned to a fixed tag.
+  #
+  # The default substrate because it is actively maintained and a true drop-in:
+  # same port 9000, same host:port endpoint shape, same root-credential env
+  # pattern, so every example and env var in this repo works unchanged. MinIO
+  # remains fully supported via compose.minio.yml — it is pinned to its last
+  # community release, which will never be updated again; that freeze is the
+  # reason the default moved, not any failure of MinIO itself.
+  #
+  # Maturity caveat, stated plainly: this is 1.0.0-rc.6, not 1.0. It passes
+  # every operation CairnMark performs (round-trip, ranged reads, unknown-size
+  # multipart, presigned GET, listing past the 1000-key page boundary, and both
+  # GC reclamation paths), but it is newer than the alternatives. For production
+  # data, read the README's backend comparison before defaulting to it.
+  #
+  # Web console: http://localhost:9001/rustfs/console/ — note the trailing path.
+  # Unlike MinIO, RustFS does NOT serve the console at the root of 9001; the S3
+  # API answers there and returns an XML AccessDenied, which looks like a broken
+  # console if you guess the URL.
+  #
+  # Runs as UID 10001 — a named volume avoids the ownership dance a bind mount
+  # would need.
+  rustfs:
+    image: rustfs/rustfs:1.0.0-rc.6
     environment:
-      MINIO_ROOT_USER: cairnmark
-      MINIO_ROOT_PASSWORD: cairnmark-secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_ACCESS_KEY: cairnmark
+      RUSTFS_SECRET_KEY: cairnmark-secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
     ports:
       - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      - "9001:9001"   # web console, at /rustfs/console/ (not the root)
     volumes:
-      - miniodata:/data
+      - rustfsdata:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # /health needs no credentials. `curl` ships in the image; there is no
+      # vendor CLI to depend on (MinIO's healthcheck used its bundled `mc`).
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
 
 volumes:
   pgdata:
-  miniodata:
+  rustfsdata:

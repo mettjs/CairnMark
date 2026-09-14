@@ -5,6 +5,8 @@
 .dockerignore
 Dockerfile
 docker-compose.yml
+compose.*.yml
+deploy/
 *.md
 .env
 .env.local
