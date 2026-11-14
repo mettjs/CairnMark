@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
+    <img src=".github/logo-light.svg" alt="CairnMark" width="330" height="72">
+  </picture>
+</p>
+
 # CairnMark
 
 [![CI](https://github.com/mettjs/cairnmark/actions/workflows/ci.yml/badge.svg)](https://github.com/mettjs/cairnmark/actions/workflows/ci.yml)
